@@ -1,0 +1,10 @@
+{
+  "features": [
+    {
+      "id": "f1_monaco_ui",
+      "name": "Dynatrace Monaco Orchestration UI",
+      "status": "pending",
+      "description": "Plataforma web interna para gestionar entornos multi-tenant de Dynatrace, orquestando Monaco CLI (deploy/download) y versionando cada configuracion en repositorios Git locales, sin depender de servicios externos."
+    }
+  ]
+}

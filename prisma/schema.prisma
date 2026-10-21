@@ -1,0 +1,166 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite" // cambiar a "postgresql" en el servidor interno (ver specs/design.md)
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(ADMIN)
+  createdAt    DateTime @default(now())
+}
+
+// Configuracion global de la app (fila unica, id fijo "default").
+// Se edita desde la pagina /settings; el worker la lee en cada ciclo del scheduler.
+model AppSettings {
+  id                      String    @id @default("default")
+  // Cantidad de backups (commits git) a conservar por entorno; el excedente se poda.
+  backupRetention         Int       @default(10)
+  autoBackupEnabled       Boolean   @default(false)
+  autoBackupIntervalHours Int       @default(24)
+  lastAutoBackupAt        DateTime?
+  // Captura periodica del snapshot de consumo DPS (ciclo independiente del
+  // backup de Monaco: en background, en serie y con pausas entre cuentas).
+  dpsSnapshotEnabled       Boolean   @default(true)
+  dpsSnapshotIntervalHours Int       @default(3)
+  lastDpsSnapshotAt        DateTime?
+  // Analisis de dashboards con IA local (Ollama): a donde apunta y con que
+  // modelo. dashboardPrompt = plantilla del prompt (null = usar el default del
+  // codigo). La lista de dashboards se inyecta en el placeholder {dashboards}.
+  ollamaUrl               String    @default("http://localhost:11434")
+  ollamaModel             String    @default("llama3.2:3b")
+  dashboardPrompt         String?
+  updatedAt               DateTime  @updatedAt
+}
+
+// Snapshot diario de consumo DPS. La Account API entrega datos por dia: una
+// vez consultado un dia, se sirve desde aca sin volver a llamar a Dynatrace.
+// kind = ENVIRONMENT (key = environmentId, data = ConsumptionSummary) o
+// kind = ACCOUNT (key = accountUuid, data = SubscriptionOverview).
+model DpsSnapshot {
+  id        String   @id @default(uuid())
+  kind      String
+  key       String
+  day       String // YYYY-MM-DD (fecha local del servidor)
+  data      String // JSON
+  createdAt DateTime @default(now())
+
+  @@unique([kind, key, day])
+}
+
+model Tenant {
+  id           String        @id @default(uuid())
+  name         String        @unique
+  slug         String        @unique
+  environments Environment[]
+  createdAt    DateTime      @default(now())
+}
+
+enum EnvironmentStatus {
+  IDLE
+  RUNNING
+}
+
+model Environment {
+  id          String            @id @default(uuid())
+  name        String
+  slug        String
+  url         String
+  envId       String? // ID crudo del entorno SaaS (ej. abc12345); null si es URL personalizada (Managed)
+  tokenCipher String
+  // Token de Platform (Bearer) para la Document API (gestion de dashboards).
+  // Opcional: la seccion de dashboards solo funciona si esta seteado.
+  platformTokenCipher String?
+  // Credenciales de cuenta (Account Management API) para resolver SSO id -> email.
+  // Opcionales: si faltan, la UI de dashboards muestra SSO ids.
+  accountUuid       String?
+  oauthClientId     String?
+  oauthClientCipher String? // client secret cifrado
+  localPath   String
+  status      EnvironmentStatus @default(IDLE)
+  tenantId    String
+  tenant      Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  jobs        Job[]
+  activities  ActivityLog[]
+  createdAt   DateTime          @default(now())
+
+  @@unique([tenantId, slug])
+}
+
+enum JobType {
+  DEPLOY
+  BACKUP
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+// Resultado persistido del analisis de un dashboard con IA local (Ollama).
+// Se guarda para no perder el analisis al cerrar la vista. Un registro por
+// (entorno, dashboard); el ultimo analisis pisa al anterior.
+model DashboardAnalysis {
+  id            String   @id @default(uuid())
+  environmentId String
+  dashboardId   String
+  name          String
+  verdict       String // conservar | revisar | eliminar
+  reason        String
+  tileCount     Int      @default(0)
+  tileTitles    String   @default("") // JSON array de titulos de tiles
+  contentChars  Int      @default(0) // tamaño del contenido (proxy de cuanto DQL/logica tiene)
+  versions      Int      @default(0)
+  model         String   @default("") // modelo de IA usado
+  analyzedAt    DateTime @default(now())
+
+  @@unique([environmentId, dashboardId])
+}
+
+model ActivityLog {
+  id            String       @id @default(uuid())
+  type          String
+  title         String
+  message       String       @default("")
+  status        String       @default("SUCCESS")
+  triggeredBy   String       @default("unknown")
+  environmentId String?
+  environment   Environment? @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  createdAt     DateTime     @default(now())
+}
+
+model Job {
+  id            String      @id @default(uuid())
+  type          JobType
+  dryRun        Boolean     @default(false) // solo aplica a DEPLOY: valida sin aplicar cambios
+  // Para DEPLOY cross-tenant: entorno cuyo backup se despliega (origen).
+  // null = self-deploy (se usa el manifest.yaml del propio entorno).
+  sourceEnvironmentId String?
+  // JSON array de tipos de config a incluir (ej. ["application-web"]); null = todo.
+  configTypes   String?
+  status        JobStatus   @default(PENDING)
+  command       String      @default("") // comando monaco ejecutado (sin el token), para mostrar en la UI
+  output        String      @default("")
+  exitCode      Int? // codigo de salida del proceso monaco
+  errorSummary  String? // resumen legible del motivo de fallo
+  triggeredBy   String
+  environmentId String
+  environment   Environment @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  createdAt     DateTime    @default(now())
+  startedAt     DateTime?
+  finishedAt    DateTime?
+}
